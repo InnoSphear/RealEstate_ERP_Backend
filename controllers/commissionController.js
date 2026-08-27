@@ -24,6 +24,7 @@ export const createCommission = async (req, res) => {
       .populate('user', 'full_name')
       .populate('created_by', 'full_name')
       .populate('client', 'client_id full_name')
+      .populate('property', 'property_id flat_number tower project_name building_name society_name location city')
       .populate('invoice', 'invoice_number')
       .populate('payment', 'payment_number')
       .populate('external_broker', 'name company_name phone')
@@ -57,7 +58,9 @@ export const getCommissions = async (req, res) => {
     const commissions = await Commission.find(filter)
       .populate('employee', 'employee_id full_name department')
       .populate('user', 'full_name email')
+      .populate('created_by', 'full_name')
       .populate('client', 'client_id full_name')
+      .populate('property', 'property_id flat_number tower project_name building_name society_name location city')
       .populate('invoice', 'invoice_number total_amount')
       .populate('payment', 'payment_number amount')
       .populate('paid_by', 'full_name')
@@ -77,6 +80,7 @@ export const getCommissionById = async (req, res) => {
       .populate('employee', 'employee_id full_name department')
       .populate('user', 'full_name email')
       .populate('client', 'client_id full_name mobile')
+      .populate('property', 'property_id flat_number tower project_name building_name society_name location city')
       .populate('invoice', 'invoice_number total_amount')
       .populate('payment', 'payment_number amount')
       .populate('paid_by', 'full_name')
@@ -112,6 +116,8 @@ export const updateCommission = async (req, res) => {
     )
       .populate('employee', 'employee_id full_name')
       .populate('user', 'full_name')
+      .populate('client', 'client_id full_name')
+      .populate('property', 'property_id flat_number tower project_name building_name society_name location city')
       .populate('external_broker', 'name company_name phone')
     if (!commission) return res.status(404).json({ message: 'Commission not found' })
 
@@ -151,6 +157,7 @@ export const getCommissionsByEmployee = async (req, res) => {
     const commissions = await Commission.find(filter)
       .populate('employee', 'employee_id full_name')
       .populate('client', 'client_id full_name')
+      .populate('property', 'property_id flat_number tower project_name building_name society_name location city')
       .populate('invoice', 'invoice_number total_amount')
       .populate('paid_by', 'full_name')
       .populate('payment_history.paid_by', 'full_name')
@@ -175,6 +182,7 @@ export const getPendingCommissions = async (req, res) => {
       .populate('employee', 'employee_id full_name department')
       .populate('user', 'full_name')
       .populate('client', 'client_id full_name')
+      .populate('property', 'property_id flat_number tower project_name building_name society_name location city')
       .populate('invoice', 'invoice_number total_amount')
       .populate('paid_by', 'full_name')
       .populate('payment_history.paid_by', 'full_name')
@@ -197,7 +205,9 @@ export const approveCommission = async (req, res) => {
       { _id: req.params.id, tenant: req.tenant._id, status: 'pending' },
       { status: 'approved', approved_by: req.user._id, approved_at: new Date() },
       { new: true }
-    ).populate('employee', 'employee_id full_name')
+    )
+      .populate('employee', 'employee_id full_name')
+      .populate('property', 'property_id flat_number tower project_name building_name society_name location city')
     if (!commission) return res.status(404).json({ message: 'Commission not found or already processed' })
 
     await ActivityLog.create({
@@ -249,6 +259,7 @@ export const payCommission = async (req, res) => {
 
     const populated = await Commission.findById(commission._id)
       .populate('employee', 'employee_id full_name')
+      .populate('property', 'property_id flat_number tower project_name building_name society_name location city')
       .populate('paid_by', 'full_name')
       .populate('payment_history.paid_by', 'full_name')
 
@@ -275,7 +286,9 @@ export const cancelCommission = async (req, res) => {
       { _id: req.params.id, tenant: req.tenant._id, status: 'pending' },
       { status: 'cancelled' },
       { new: true }
-    ).populate('employee', 'employee_id full_name')
+    )
+      .populate('employee', 'employee_id full_name')
+      .populate('property', 'property_id flat_number tower project_name building_name society_name location city')
     if (!commission) return res.status(404).json({ message: 'Commission not found or already processed' })
 
     await ActivityLog.create({
@@ -340,6 +353,7 @@ export const requestCommission = async (req, res) => {
     const populated = await Commission.findById(commission._id)
       .populate('employee', 'employee_id full_name')
       .populate('client', 'client_id full_name')
+      .populate('property', 'property_id flat_number tower project_name building_name society_name location city')
       .populate('external_broker', 'name company_name phone')
 
     await ActivityLog.create({
@@ -373,6 +387,7 @@ export const getMyCommissions = async (req, res) => {
     const commissions = await Commission.find(filter)
       .populate('employee', 'employee_id full_name department')
       .populate('client', 'client_id full_name')
+      .populate('property', 'property_id flat_number tower project_name building_name society_name location city')
       .populate('invoice', 'invoice_number total_amount')
       .populate('paid_by', 'full_name')
       .populate('payment_history.paid_by', 'full_name')

@@ -11,7 +11,9 @@ const reportHistorySchema = new mongoose.Schema({
   filters: { type: mongoose.Schema.Types.Mixed },
   rows_generated: { type: Number, default: 0 },
   file_size: { type: String, maxlength: 20 },
+  file_name: { type: String, maxlength: 255 },
   download_url: { type: String },
+  public_id: { type: String },
   error_message: { type: String, maxlength: 500 },
 }, { timestamps: true })
 

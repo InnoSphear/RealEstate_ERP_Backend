@@ -15,52 +15,66 @@ import PurchaseOrder from '../models/PurchaseOrder.js'
 import PurchaseOrderItem from '../models/PurchaseOrderItem.js'
 import User from '../models/User.js'
 import ReportHistory from '../models/ReportHistory.js'
+import { uploadToCloudinary } from '../middlewares/upload.js'
 
 const getExportFormat = (req) => req.query.format || 'json'
 
-const exportJson = (res, data, filename) => {
-  res.setHeader('Content-Type', 'application/json')
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}.json"`)
-  res.json(data)
+const FORMAT_META = {
+  csv: { ext: 'csv', contentType: 'text/csv; charset=utf-8' },
+  excel: { ext: 'xlsx', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+  pdf: { ext: 'pdf', contentType: 'application/pdf' },
+  json: { ext: 'json', contentType: 'application/json; charset=utf-8' },
 }
 
-const exportCsv = (res, data, filename, headers) => {
+const humanFileSize = (bytes) => {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${bytes} B`
+}
+
+const stampedName = (filename, ext) => {
+  const d = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  const ts = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`
+  return `${filename}-${ts}.${ext}`
+}
+
+const buildCsvBuffer = (data, columnMap) => {
+  const keys = Object.keys(columnMap)
+  const displayHeaders = Object.values(columnMap)
   const csvRows = []
-  csvRows.push(headers.join(','))
+  csvRows.push(displayHeaders.map((h) => `"${h}"`).join(','))
   for (const row of data) {
-    csvRows.push(headers.map((h) => {
-      const val = String(row[h] ?? '')
+    csvRows.push(keys.map((k) => {
+      const val = String(row[k] ?? '')
       return val.includes(',') || val.includes('"') || val.includes('\n') ? `"${val.replace(/"/g, '""')}"` : val
     }).join(','))
   }
-  res.setHeader('Content-Type', 'text/csv')
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}.csv"`)
-  res.send(csvRows.join('\n'))
+  return Buffer.from(csvRows.join('\n'), 'utf-8')
 }
 
-const exportExcel = async (res, data, filename, headers, sheetName) => {
-  try {
-    const ExcelJS = (await import('exceljs')).default
-    const workbook = new ExcelJS.Workbook()
-    const sheet = workbook.addWorksheet(sheetName || 'Sheet1')
-    sheet.columns = headers.map((h) => ({ header: h, key: h, width: 20 }))
-    data.forEach((row) => sheet.addRow(row))
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}.xlsx"`)
-    await workbook.xlsx.write(res)
-    res.end()
-  } catch (err) {
-    res.status(500).json({ message: err.message })
-  }
+const buildExcelBuffer = async (data, columnMap, sheetName) => {
+  const keys = Object.keys(columnMap)
+  const displayHeaders = Object.values(columnMap)
+  const ExcelJS = (await import('exceljs')).default
+  const workbook = new ExcelJS.Workbook()
+  const sheet = workbook.addWorksheet(sheetName || 'Sheet1')
+  sheet.columns = keys.map((k, i) => ({ header: displayHeaders[i], key: k, width: 20 }))
+  data.forEach((row) => sheet.addRow(row))
+  return Buffer.from(await workbook.xlsx.writeBuffer())
 }
 
-const exportPdf = async (res, data, filename, title, columns, tenant) => {
-  try {
-    const PDFDocument = (await import('pdfkit')).default
-    const doc = new PDFDocument({ margin: 50 })
-    res.setHeader('Content-Type', 'application/pdf')
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}.pdf"`)
-    doc.pipe(res)
+const buildPdfBuffer = async (data, title, columnMap, tenant) => {
+  const PDFDocument = (await import('pdfkit')).default
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    const doc = new PDFDocument({ margin: 50, bufferPages: true })
+    doc.on('data', (c) => chunks.push(c))
+    doc.on('end', () => resolve(Buffer.concat(chunks)))
+    doc.on('error', reject)
+
+    const keys = Object.keys(columnMap)
+    const displayHeaders = Object.values(columnMap)
 
     const company = tenant || {}
     doc.fontSize(18).text(company.company_name || 'Shivam International', { align: 'center' })
@@ -74,12 +88,12 @@ const exportPdf = async (res, data, filename, title, columns, tenant) => {
     doc.fontSize(18).text(title, { align: 'center' })
     doc.moveDown()
 
-    if (data.length > 0 && columns) {
+    if (data.length > 0 && keys.length > 0) {
       const tableTop = doc.y
       doc.fontSize(10)
-      const colWidth = (doc.page.width - 100) / columns.length
-      columns.forEach((col, i) => {
-        doc.text(col, 50 + i * colWidth, tableTop, { width: colWidth, bold: true })
+      const colWidth = (doc.page.width - 100) / keys.length
+      displayHeaders.forEach((header, i) => {
+        doc.text(header, 50 + i * colWidth, tableTop, { width: colWidth })
       })
       doc.moveDown(0.5)
       doc.moveTo(50, doc.y).lineTo(doc.page.width - 50, doc.y).stroke()
@@ -87,32 +101,78 @@ const exportPdf = async (res, data, filename, title, columns, tenant) => {
 
       data.forEach((row) => {
         if (doc.y > doc.page.height - 100) doc.addPage()
-        columns.forEach((col, i) => {
-          doc.text(String(row[col] ?? ''), 50 + i * colWidth, doc.y, { width: colWidth })
+        const startY = doc.y
+        keys.forEach((key, i) => {
+          const val = String(row[key] ?? '')
+          doc.text(val, 50 + i * colWidth, startY, { width: colWidth })
         })
         doc.moveDown(0.3)
       })
     } else {
-      doc.fontSize(12).text(JSON.stringify(data, null, 2))
+      doc.fontSize(12).text('No data available for this report.')
     }
 
     doc.end()
-  } catch (err) {
-    res.status(500).json({ message: err.message })
-  }
+  })
 }
 
 const handleExport = async (req, res, data, filename, title, columnMap) => {
-  const format = getExportFormat(req)
-  switch (format) {
-    case 'csv':
-      return exportCsv(res, data, filename, Object.keys(columnMap))
-    case 'excel':
-      return exportExcel(res, data, filename, Object.keys(columnMap), title)
-    case 'pdf':
-      return exportPdf(res, data, filename, title, Object.keys(columnMap), req.tenant)
-    default:
-      return exportJson(res, data, filename)
+  try {
+    const format = getExportFormat(req).toLowerCase()
+    const meta = FORMAT_META[format] || FORMAT_META.json
+    res.setHeader('x-rows-count', String(data.length))
+
+    let buffer = null
+    if (format === 'csv') {
+      buffer = buildCsvBuffer(data, columnMap)
+    } else if (format === 'excel') {
+      buffer = await buildExcelBuffer(data, columnMap, title)
+    } else if (format === 'pdf') {
+      buffer = await buildPdfBuffer(data, title, columnMap, req.tenant)
+    } else {
+      res.setHeader('Content-Type', meta.contentType)
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}.json"`)
+      return res.json(data)
+    }
+
+    const displayName = stampedName(filename, meta.ext)
+
+    let historyId = null
+    if (!req.skip_history) {
+      try {
+        const entry = await ReportHistory.create({
+          tenant: req.tenant._id,
+          user: req.user._id,
+          report_type: req.query.report_type || filename.replace(/-report$/, ''),
+          format,
+          status: 'completed',
+          filters: { ...req.query },
+          rows_generated: data.length,
+          file_size: humanFileSize(buffer.length),
+          file_name: displayName,
+        })
+        historyId = entry._id
+      } catch {}
+    }
+
+    res.setHeader('x-history-id', String(historyId || ''))
+    res.setHeader('Content-Type', meta.contentType)
+    res.setHeader('Content-Disposition', `attachment; filename="${displayName}"`)
+    res.send(buffer)
+
+    if (historyId && process.env.CLOUDINARY_CLOUD_NAME && buffer.length > 0) {
+      setImmediate(async () => {
+        try {
+          const stored = await uploadToCloudinary(buffer, { folder: 'realestate_erp/reports' })
+          await ReportHistory.updateOne(
+            { _id: historyId },
+            { $set: { download_url: stored.url, public_id: stored.public_id } }
+          )
+        } catch {}
+      })
+    }
+  } catch (err) {
+    if (!res.headersSent) res.status(500).json({ message: err.message })
   }
 }
 
@@ -477,8 +537,8 @@ export const generateRentReport = async (req, res) => {
       maintenance_charge: r.maintenance_charge,
       furnishing: r.furnishing,
       status: r.status,
-      owner_name: r.owner.name,
-      owner_contact: r.owner.contact,
+      owner_name: r.owner?.name || '',
+      owner_contact: r.owner?.contact || '',
       tenant_name: r.tenant_info?.name || '',
       tenant_contact: r.tenant_info?.contact || '',
       rental_start: r.rental_start_date ? r.rental_start_date.toISOString().split('T')[0] : '',
@@ -811,10 +871,92 @@ export const saveReportHistory = async (req, res) => {
   }
 }
 
+export const downloadReportHistory = async (req, res) => {
+  try {
+    const entry = await ReportHistory.findOne({ _id: req.params.id, tenant: req.tenant._id })
+    if (!entry) return res.status(404).json({ message: 'Report entry not found' })
+
+    const meta = FORMAT_META[entry.format] || {}
+    const fileName = entry.file_name || `${entry.report_type || 'report'}-report.${meta.ext || 'xlsx'}`
+
+    if (entry.download_url) {
+      try {
+        const upstream = await fetch(entry.download_url)
+        if (upstream.ok) {
+          res.setHeader('Content-Type', meta.contentType || upstream.headers.get('content-type') || 'application/octet-stream')
+          res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`)
+          return res.send(Buffer.from(await upstream.arrayBuffer()))
+        }
+      } catch {}
+    }
+
+    const generator = REPORT_GENERATORS[entry.report_type]
+    if (!generator) {
+      return res.status(404).json({ message: 'Stored file is not available for this report. Generate it again.' })
+    }
+
+    const fakeReq = {
+      query: { ...(entry.filters || {}), format: entry.format },
+      tenant: req.tenant,
+      user: req.user,
+      skip_history: true,
+    }
+    const fakeRes = {
+      statusCode: 200,
+      headers: {},
+      body: null,
+      setHeader(k, v) { this.headers[String(k).toLowerCase()] = v },
+      status(code) { this.statusCode = code; return this },
+      json(data) { this.body = Buffer.from(JSON.stringify(data)); },
+      send(data) { this.body = Buffer.isBuffer(data) ? data : Buffer.from(String(data)); },
+      end() {},
+    }
+    await generator(fakeReq, fakeRes)
+
+    if (fakeRes.statusCode !== 200 || !fakeRes.body || fakeRes.body.length === 0) {
+      return res.status(fakeRes.statusCode === 200 ? 500 : fakeRes.statusCode).json({ message: 'Could not regenerate this report' })
+    }
+
+    res.setHeader('Content-Type', fakeRes.headers['content-type'] || meta.contentType || 'application/octet-stream')
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`)
+    return res.send(fakeRes.body)
+  } catch (err) {
+    if (!res.headersSent) res.status(500).json({ message: err.message })
+  }
+}
+
+const REPORT_GENERATORS = {
+  lead: generateLeadReport,
+  leads: generateLeadReport,
+  employee: generateEmployeeReport,
+  employees: generateEmployeeReport,
+  sales: generateSalesReport,
+  revenue: generateRevenueReport,
+  property: generatePropertyReport,
+  properties: generatePropertyReport,
+  commission: generateCommissionReport,
+  commissions: generateCommissionReport,
+  attendance: generateAttendanceReport,
+  rent: generateRentReport,
+  'interior-projects': generateInteriorProjectReport,
+  interior_projects: generateInteriorProjectReport,
+  'lead-conversion': generateLeadConversionReport,
+  lead_conversion: generateLeadConversionReport,
+  'employee-performance': generateEmployeePerformanceReport,
+  employee_performance: generateEmployeePerformanceReport,
+  inventory: generateInventoryReport,
+}
+
 export const deleteReportHistory = async (req, res) => {
   try {
     const entry = await ReportHistory.findOneAndDelete({ _id: req.params.id, tenant: req.tenant._id })
     if (!entry) return res.status(404).json({ message: 'History entry not found' })
+    if (entry.public_id && process.env.CLOUDINARY_CLOUD_NAME) {
+      try {
+        const cloudinary = (await import('cloudinary')).v2
+        await cloudinary.uploader.destroy(entry.public_id, { resource_type: 'raw' })
+      } catch {}
+    }
     res.json({ message: 'Deleted' })
   } catch (err) {
     res.status(500).json({ message: err.message })

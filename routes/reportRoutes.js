@@ -17,6 +17,7 @@ import {
   getReportHistory,
   saveReportHistory,
   deleteReportHistory,
+  downloadReportHistory,
 } from '../controllers/reportController.js'
 import { protect, authorize } from '../middlewares/auth.js'
 
@@ -39,6 +40,7 @@ router.get('/employee-wise', generateEmployeeWiseReport)
 router.get('/user-wise', generateUserWiseReport)
 router.get('/inventory', generateInventoryReport)
 router.get('/history', getReportHistory)
+router.get('/history/:id/download', downloadReportHistory)
 router.post('/history', saveReportHistory)
 router.delete('/history/:id', deleteReportHistory)
 
